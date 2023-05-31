@@ -19,6 +19,7 @@ from rio_tiler.io.base import BaseReader
 from rio_tiler.models import BandStatistics, ImageData, Info, PointData
 from rio_tiler.types import BBox, WarpResampling
 from rio_tiler.utils import _validate_shape_input
+from profiler.main import Timer
 
 try:
     import xarray
@@ -219,21 +220,27 @@ class XarrayReader(BaseReader):
                 f"Tile {tile_z}/{tile_x}/{tile_y} is outside bounds"
             )
 
-        tile_bounds = self.tms.xy_bounds(Tile(x=tile_x, y=tile_y, z=tile_z))
-        dst_crs = self.tms.rasterio_crs
+        with Timer() as t:
+            tile_bounds = self.tms.xy_bounds(Tile(x=tile_x, y=tile_y, z=tile_z))
+        print(f"Time elapsed for xy bounds: {round(t.elapsed * 1000, 5)}")
 
         # Create source array by clipping the xarray dataset to extent of the tile.
-        ds = self.input.rio.clip_box(
-            *tile_bounds,
-            crs=dst_crs,
-            auto_expand=auto_expand,
-        )
-        ds = ds.rio.reproject(
-            dst_crs,
-            shape=(tilesize, tilesize),
-            transform=from_bounds(*tile_bounds, height=tilesize, width=tilesize),
-            resampling=Resampling[resampling_method],
-        )
+        with Timer() as t:
+            ds = self.input.rio.clip_box(
+                *tile_bounds,
+                crs=self.tms.rasterio_crs,
+                auto_expand=auto_expand,
+            )
+        print(f"Time elapsed for clip_box: {round(t.elapsed * 1000, 5)}")
+
+        with Timer() as t:
+            ds = ds.rio.reproject(
+                self.tms.rasterio_crs,
+                shape=(tilesize, tilesize),
+                transform=from_bounds(*tile_bounds, height=tilesize, width=tilesize),
+                resampling=Resampling[resampling_method],
+            )
+        print(f"Time elapsed for reproject: {round(t.elapsed * 1000, 5)}")
 
         # Forward valid_min/valid_max to the ImageData object
         minv, maxv = ds.attrs.get("valid_min"), ds.attrs.get("valid_max")
@@ -243,13 +250,17 @@ class XarrayReader(BaseReader):
 
         band_names = [str(band) for d in self._dims for band in self.input[d].values]
 
-        return ImageData(
-            ds.data,
-            bounds=tile_bounds,
-            crs=dst_crs,
-            dataset_statistics=stats,
-            band_names=band_names,
-        )
+        with Timer() as t:
+            image_data = ImageData(
+                ds.data,
+                bounds=tile_bounds,
+                crs=self.tms.rasterio_crs,
+                dataset_statistics=stats,
+                band_names=band_names,
+            )
+        print(f"Time elapsed for ImageData: {round(t.elapsed * 1000, 5)}")
+
+        return image_data
 
     def part(
         self,
